@@ -825,7 +825,7 @@ Install KernelCare.com (paid service for no-reboot kernel updates)
 		# The software will automatically check for new patches every 4 hours. If you would like to run update manually: 
 		/usr/bin/kcarectl --update
 
-Preparing the virtual machine for distribution:
+Preparing the virtual machine for distribution
 	Run these commands inside the virtual machine - it will automatically poweroff when complete.
 		killall -9 php
 		php /var/jetendo-server/system/clean-machine.php
