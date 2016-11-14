@@ -13,8 +13,11 @@ Download Jetendo Server
 	The Jetendo Server project holds most of the configuration required by the virtual machine.
 
 Virtualbox initial setup
+	Make sure to make the virtualbox disk size at least 10gb, with the intention to use less then 80% of the available space in order to keep ZFS fast.
+	
 	Ubuntu Linux x64
 	Minimum requirements: 2048mb ram, 5gb hard drive, 1gb 2nd hard drive for swap, 1 NAT network adapter
+	Set network type to paravirtualized under NAT advanced
 	NAT Advanced Settings -> Port forwarding
 		Name: SSH, Host Ip: 127.0.0.2: Host Port: 3222, Guest Ip: 10.0.2.15, Guest Port: 22
 		Name: Nginx, Host Ip: 127.0.0.2: Host Port: 80, Guest Ip: 10.0.2.15, Guest Port: 80
@@ -31,37 +34,242 @@ Virtualbox initial setup
 		php
 		apache
 		jetendo
-	Download and mount Ubuntu 14.04 LTS ISO to cdrom on first boot
+		
+	Because Ubuntu Server/Desktop can't format a drive to use the ZFS filesystem during the guided installer, we have to install Ubuntu manually following these commands.   
+	This ZFS documentation was in part, based on the official guide posted here, which may help you with other tips if you intend to build a system differently then our recommendations below:
+		https://github.com/zfsonlinux/zfs/wiki/Ubuntu-16.04-Root-on-ZFS
+		
+	Download and mount Ubuntu Desktop Live CS 16.04 LTS ISO to cdrom on first boot
+	DO NOT download the Ubuntu Server ISO.  This ISO can't be used to install the system.  We are only installing a minimal system from the Ubuntu Desktop. The desktop GUI is not actually being installed in the documentation below, so Ubuntu Desktop ISO is identical to ubuntu server in the end.
 	
-	At Install Prompt, Press F4 (modes) and select Minimal Virtual Machine Install if this is virtual machine
-		make / (root) partition on at least a 3gb drive.
-		setup /var on a large separate drive (20gb+) and one large partition, so that the base file is as small as possible with all variable data on the second drive, which can be cloned and attached to multiple virtual machines.
-		use defaults for all options - except don't encrypt your home directory.
-	The username created during install will not be used later.
-	Don't select any packages when prompted because this is a minimal install and they will be configured with shell afterwards.
+	After linux boots, click on "Try Ubuntu".
+	Now open Terminal and continue to setup the ZFS filesystem with these commands so that we can boot root on a ZFS filesystem.
+		sudo apt-add-repository universe
+		sudo apt update
+		sudo -i
+		apt install --yes debootstrap gdisk zfs-initramfs
+		ls /dev/disk/by-id
+		# Use those ids in the commands below to identify your disks
+		
+		# partition disk
+			Single disk system without raid:
+				sgdisk -a1 -n2:34:2047  -t2:EF02 /dev/disk/by-id/ata-VBOX_HARDDISK_VBd128ab21-b24af451
+				sgdisk     -n9:-8M:0    -t9:BF07 /dev/disk/by-id/ata-VBOX_HARDDISK_VBd128ab21-b24af451
+				sgdisk     -n1:0:0      -t1:BF01 /dev/disk/by-id/ata-VBOX_HARDDISK_VBd128ab21-b24af451
+			
+				#create root pool without mirror raid
+				zpool create -o ashift=12 -O atime=off -O canmount=off -O compression=lz4 -O mountpoint=/ -R /mnt rpool /dev/disk/by-id/ata-VBOX_HARDDISK_VBd128ab21-b24af451-part1
+				
+			To use ZFS software raid, create identical partitions on 2 drives:
+				sgdisk -a1 -n2:34:2047  -t2:EF02 /dev/disk/by-id/ata-VBOX_HARDDISK_VBd128ab21-b24af451
+				sgdisk     -n9:-8M:0    -t9:BF07 /dev/disk/by-id/ata-VBOX_HARDDISK_VBd128ab21-b24af451
+				sgdisk     -n1:0:0      -t1:BF01 /dev/disk/by-id/ata-VBOX_HARDDISK_VBd128ab21-b24af451
+				# and the second drive
+				sgdisk -a1 -n2:34:2047  -t2:EF02 /dev/disk/by-id/ata-VBOX_HARDDISK_VB2bf9feca-7c528e59
+				sgdisk     -n9:-8M:0    -t9:BF07 /dev/disk/by-id/ata-VBOX_HARDDISK_VB2bf9feca-7c528e59
+				sgdisk     -n1:0:0      -t1:BF01 /dev/disk/by-id/ata-VBOX_HARDDISK_VB2bf9feca-7c528e59
+			
+				#create root pool with mirror raid
+				zpool create -o ashift=12 -O atime=off -O canmount=off -O compression=lz4 -O mountpoint=/ -R /mnt rpool  mirror /dev/disk/by-id/ata-VBOX_HARDDISK_VBd128ab21-b24af451-part1 /dev/disk/by-id/ata-VBOX_HARDDISK_VB2bf9feca-7c528e59-part1
+
+			
+			#note each filesystem can use all of the available space instead of being forced to reserve.  But you can also set quotas or reservations per mount even on a live system.
+			#create filesystem dataset in pool
+			zfs create -o canmount=off -o mountpoint=none -o atime=off rpool/ROOT
+			zfs create -o canmount=noauto -o mountpoint=/  -o atime=off rpool/ROOT/ubuntu
+			zfs mount rpool/ROOT/ubuntu
+			zfs create         -o atime=off        -o setuid=off              rpool/home
+			zfs create -o mountpoint=/root  -o atime=off                       rpool/home/root
+			zfs create -o canmount=off -o setuid=off  -o atime=off -o exec=off rpool/var
+			zfs create -o com.sun:auto-snapshot=false  -o atime=off            rpool/var/cache
+			zfs create  -o atime=off rpool/var/log
+			zfs create  -o atime=off rpool/var/spool
+			zfs create  -o atime=off -o com.sun:auto-snapshot=false -o exec=on  rpool/var/tmp
+
+			#on production only:
+				zfs create -o canmount=off -o setuid=off -o recordsize=16k -o atime=off -o exec=off rpool/var/jetendo-server/mysql
+				zfs create -o canmount=off -o setuid=off -o recordsize=128k -o atime=off -o exec=off rpool/var/jetendo-server/mysql/logs/
+			chmod 1777 /mnt/var/tmp
+			debootstrap xenial /mnt
+			zfs set devices=off rpool
+			
+			echo jetendo.127.0.0.2.nip.io > /mnt/etc/hostname
+
+			nano /mnt/etc/hosts
+			127.0.0.2     jetendo.127.0.0.2.nip.io
+			
+			ifconfig -a
+			nano /mnt/etc/network/interfaces.d/eth0
+			auto eth0
+			iface ath0 inet dhcp
+			
+			mount --rbind /dev  /mnt/dev
+			mount --rbind /proc /mnt/proc
+			mount --rbind /sys  /mnt/sys
+			chroot /mnt /bin/bash --login
+			
+			locale-gen en_US.UTF-8
+			
+			echo 'LANG="en_US.UTF-8"' > /etc/default/locale
+
+			#select US and then eastern
+			dpkg-reconfigure tzdata
+
+			vi /etc/apt/sources.list
+			#type in 	:set paste and then right click paste in the following:  and after that hit Esc and then type :wq and enter to save
+			deb http://us.archive.ubuntu.com/ubuntu xenial main universe multiverse
+			deb-src http://us.archive.ubuntu.com/ubuntu xenial main universe multiverse
+
+			deb http://us.archive.ubuntu.com/ubuntu xenial-security main universe multiverse
+			deb-src http://us.archive.ubuntu.com/ubuntu xenial-security main universe multiverse
+
+			deb http://us.archive.ubuntu.com/ubuntu xenial-updates main universe multiverse
+			deb-src http://us.archive.ubuntu.com/ubuntu xenial-updates main universe multiverse
+
+			ln -s /proc/self/mounts /etc/mtab
+			apt update
+			apt install --yes ubuntu-minimal
+			
+			apt install --yes --no-install-recommends linux-image-generic
+			apt install --yes zfs-initramfs
+			
+			apt install --yes grub-pc
+			
+			addgroup --system lpadmin
+			addgroup --system sambashare
+			
+			#set the root password to 3292hay
+			passwd
+			
+			#verify this returns zfs
+			grub-probe /
+			
+			update-initramfs -c -k all
+				
+				
+			Optional (but highly recommended): Make debugging GRUB easier:
+
+			# vi /etc/default/grub
+			Comment out: GRUB_HIDDEN_TIMEOUT=0
+			set this to 2: GRUB_TIMEOUT=2
+			Remove quiet and splash from: GRUB_CMDLINE_LINUX_DEFAULT
+			Uncomment: GRUB_TERMINAL=console
+			Save and quit.
+			
+			update-grub
+			
+			#install grub twice in order to allow booting from either drive in raid mirror
+			grub-install /dev/disk/by-id/ata-VBOX_HARDDISK_VBd128ab21-b24af451
+			grub-install /dev/disk/by-id/ata-VBOX_HARDDISK_VB2bf9feca-7c528e59
+			
+			#verify zfs module is installed
+			ls /boot/grub/*/zfs.mod
+			
+			zfs snapshot rpool/ROOT/ubuntu@install
+			exit
+			mount | grep -v zfs | tac | awk '/\/mnt/ {print $3}' | xargs -i{} umount -lf {}
+			zpool export rpool
+			
+			# Before rebooting, remove the Live CD from virtualbox.
+			reboot
+				
+			apt --yes install openssh-server
+			apt-get install nano
+			disable password requirement on test virtual machine:
+				nano /vi/ssh/sshd_config
+					change PermitRootLogin to yes
+					change PermitEmptyPasswords to Yes
+				nano /etc/pam.d/common-auth
+					change nullok_secure to nullok
+				nano /etc/shadow
+					delete the password hash for root between the 2 colons so it appears like "root::" on the first line.
+			service ssh restart
+			
+			You can not connect with putty to machine 127.0.0.2 port 22, root login, with no password
+			
+			# configure swap
+				#test server
+					# find swap drive id
+					ls /dev/disk/by-id 
+					
+					apt-get install gdisk
+					# single disk system without mirror raid:
+						sgdisk     -n1:0:0      -t1:BF01 /dev/disk/by-id/ata-VBOX_HARDDISK_VB04b9a5e5-a9a4cec6
+						
+						zpool create -o ashift=12 -O atime=off -O canmount=off -O compression=lz4 -O mountpoint=/ -R /mnt rswap /dev/disk/by-id/ata-VBOX_HARDDISK_VB04b9a5e5-a9a4cec6-part1
+					
+					mirrored raid:
+						sgdisk     -n1:0:0      -t1:BF01 /dev/disk/by-id/ata-VBOX_HARDDISK_VB04b9a5e5-a9a4cec6
+						sgdisk     -n1:0:0      -t1:BF01 /dev/disk/by-id/ata-VBOX_HARDDISK_VB04b9a5e5-a9aasec6
+						
+						zpool create -o ashift=12 -O atime=off -O canmount=off -O compression=lz4 -O mountpoint=/ -R /mnt rswap mirror /dev/disk/by-id/ata-VBOX_HARDDISK_VB04b9a5e5-a9a4cec6-part1 /dev/disk/by-id/ata-VBOX_HARDDISK_VB04b9a5e5-a9aasec6-part1
+					
+					zfs create -V 1843200000 -b $(getconf PAGESIZE) -o compression=zle -o logbias=throughput -o sync=always -o primarycache=metadata -o secondarycache=none -o com.sun:auto-snapshot=false rswap/swap
+					
+					mkswap -f /dev/zvol/rswap/swap
+					echo /dev/zvol/rswap/swap none swap defaults 0 0 >> /etc/fstab
+					swapon -av
+				#production server - no swap needed if machine is greater then 16gb ram.  If you do enable swap, change the above commands to use rpool and NOT create rswap
+				
+			do normal jetendo install now.
+				apt dist-upgrade --yes
+		
+			#disable redundant log compression		
+			for each file in /etc/logrotate.d/, delete the line that says "compress"
+			reboot
+			#login as root and final cleanup
+			zfs destroy rpool/ROOT/ubuntu@install
+			
+			
+	Rescuing using a Live CD (This hasn't been tested yet)
+		If you render your system unbootable, you will need to do these extra steps to be able to view the filesystem, since the default live cds can't view/modify a zfs filesystem
+			Boot the Live CD and open a terminal.
+
+			Become root and install the ZFS utilities: 
+			$ sudo -i
+			# apt update
+			# apt install --yes zfsutils-linux
+			This will automatically import your pool. Export it and re-import it to get the mounts right:
+
+			# zpool export -a
+			# zpool import -N -R /mnt rpool
+			# zfs mount rpool/ROOT/ubuntu
+			# zfs mount -a
+			If needed, you can chroot into your installed environment:
+
+			# mount --rbind /dev  /mnt/dev
+			# mount --rbind /proc /mnt/proc
+			# mount --rbind /sys  /mnt/sys
+			# chroot /mnt /bin/bash --login
+			Do whatever you need to do to fix your system.
+
+			When done, cleanup:
+
+			# mount | grep -v zfs | tac | awk '/\/mnt/ {print $3}' | xargs -i{} umount -lf {}
+			# zpool export rpool
+			# reboot
+	
+==== NORMAL JETENDO INSTALL FOLLOWS
 	
 	After finishing the rest of this guide, you'll be able to access:
 		SSH/SFTP with:
 			127.0.0.2 port 22
 		Apache web sites with:
-			www.your-site.com.127.0.0.3.xip.io
+			www.your-site.com.127.0.0.3.nip.io
 		Nginx web sites with:
-			www.your-site.com.127.0.0.2.xip.io
+			www.your-site.com.127.0.0.2.nip.io
 		Lucee administrator:
 			http://127.0.0.2:8888/lucee/admin/server.cfm
 		Jetendo Administrator:
-			https://jetendo.your-company.com.127.0.0.2.xip.io/z/server-manager/admin/server-home/index
+			https://jetendo.your-company.com.127.0.0.2.nip.io/z/server-manager/admin/server-home/index
 			
 	To run other copies of the virtual machine, just update the IP addresses to be unique.  You can use any ips on 127.x.x.x for this without reconfiguring your host system.
 			
 After OS is installed:		
 
-# run this to act as root for a while:
-sudo -i
-
 # change vi default so insert mode is easier to use.  Type these commands:
 	vi /root/.vimrc
-	press i key twice.
+	press i key once.
 	set nocompatible
 	set backspace=indent,eol,start
 	Press escape key
@@ -89,7 +297,7 @@ sudo -i
 # vi /etc/init/cron.conf
 	change "exec cron" to "exec cron -L 0"  to stop it from filling syslog with non-error messages.
 	and
-#vi /etc/rsyslog.conf
+#vi /etc/rsyslog.d/50-default.conf
 	change 
 		*.*;auth,authpriv.none		-/var/log/syslog
 	to
@@ -113,6 +321,9 @@ sudo -i
 	
 	# allow ssh from specific ip, replace YOUR_STATIC_IP with a real IP address.
 	ufw allow from YOUR_STATIC_IP to any port 22
+	
+	# on test server only:
+		sudo ufw allow 22/tcp
 	
 	# don't have a static ip? Then allow from any IP (less secure)
 	sudo ufw allow 22/tcp
@@ -149,21 +360,7 @@ sudo -i
 	
 	ufw enable
 	
-# Enable empty password autologin for root on development server
-	might also need to run
-		sudo passwd -u root
-	sudo passwd - enter temporary password
-	vi /etc/pam.d/common-auth
-		change nullok_secure to nullok
-	vi /etc/ssh/sshd_config
-		PermitEmptyPasswords Yes
-	vi /etc/shadow
-		delete the password hash for root between the 2 colons so it appears like "root::" on the first line.
 	
-	service ssh restart
-	
-Log out and login as root using ssh for the rest of the instructions.
-
 # If server is a virtualbox virtual machine
 	apt-get install build-essential module-assistant linux-headers-$(uname -r) dkms
 	apt-get install virtualbox-guest-dkms virtualbox-guest-utils virtualbox-guest-x11
@@ -172,51 +369,40 @@ Log out and login as root using ssh for the rest of the instructions.
 		uname -r | sudo xargs -n1 /usr/lib/dkms/dkms_autoinstaller start
 	apt-get install --no-install-recommends virtualbox-guest-utils && apt-get install virtualbox-guest-dkms
 	
-	# force the vboxsf dkms kernel module to load before fstab runs
-		vi /etc/default/rcS
-			# add the following line to the bottom of the file:
-			/sbin/modprobe vboxsf
-	
 	# verify the kernel modules are loaded:
 		lsmod | grep vbox
 	
 			
 # update hostname
-	for development environment, make sure /etc/hostname matches the value used in the Jetendo configuration for the testDomain affix.  I.e. jetendo.127.0.0.2.xip.io
-	
+	for development environment, make sure /etc/hostname matches the value used in the Jetendo configuration for the testDomain affix.  I.e. jetendo.127.0.0.2.nip.io
 
-# Add the contents of /jetendo-server/system/jetendo-fstab.conf and copy the file to /etc/fstab, then run
+# force the vboxsf dkms kernel module to load before fstab runs
+vi /etc/modules
+	# add the following line to the bottom of the file:
+	vboxsf
+
+# For the test virtual machine: Add the contents of /jetendo-server/system/jetendo-fstab.conf and copy the file to /etc/fstab, then run
 	mkdir /var/jetendo-server/
 	cd /var/jetendo-server/
 	mkdir apache nginx mysql php system lucee coldfusion jetendo backup server config custom-secure-scripts logs virtual-machines luceevhosts
 	mount -a
-	mount mysql fails until it is installed because user doesn't exist yet.
+	mount mysql fails until it is installed because user doesn't exist yet.  It is safe to ignore, but you should avoid rebooting until mysql is installed.
 	
 Add Prerequisite Repositories
 	apt-get install software-properties-common
-	apt-key adv --recv-keys --keyserver hkp://keyserver.ubuntu.com:80 0xcbcb082a1bb943db
-	add-apt-repository 'deb http://ftp.utexas.edu/mariadb/repo/10.0/ubuntu trusty main'
-
+	apt-key adv --recv-keys --keyserver hkp://keyserver.ubuntu.com:80 0xF1656F24C74CD1D8
+	add-apt-repository 'deb [arch=amd64,i386,ppc64el] http://nyc2.mirrors.digitalocean.com/mariadb/repo/10.1/ubuntu xenial main'
 	
-	#best way to upgrade from mariadb 10.0 to 10.1 (10.1 fails to function - don't install 10.1)
-	service monit stop
-	service mysql stop
-	 apt-get -f remove --auto-remove mariadb-server
-	add-apt-repository --remove 'deb [arch=amd64,i386] http://mirrors.accretive-networks.net/mariadb/repo/10.1/ubuntu trusty main'
-	apt-key adv --recv-keys --keyserver hkp://keyserver.ubuntu.com:80 0xcbcb082a1bb943db
-	add-apt-repository 'deb [arch=amd64,i386] http://mirrors.accretive-networks.net/mariadb/repo/10.1/ubuntu trusty main'
-	apt-get update
-	apt-get install mariadb-server
-
-	apt-key adv --recv-keys --keyserver hkp://keyserver.ubuntu.com:80 0x4F4EA0AAE5267A6C
 	LC_ALL=C.UTF-8 add-apt-repository ppa:ondrej/php
 	add-apt-repository ppa:kirillshkrogalev/ffmpeg-next
+	add-apt-repository ppa:jonathonf/ffmpeg-3
 	add-apt-repository ppa:webupd8team/java
 	add-apt-repository ppa:stebbins/handbrake-releases
 	apt-get update
-
+	
 Install Required Packages
-	apt-get install apache2 apt-show-versions monit rsyslog ntp cifs-utils mailutils samba fail2ban libsasl2-modules postfix opendkim opendkim-tools oracle-java7-installer p7zip-full handbrake-cli dnsmasq imagemagick ffmpeg git libssl-dev build-essential  libpcre3-dev unzip apparmor-utils rng-tools php-pear mariadb-server make
+	# set mysql root password and choose internet site for postfix
+	apt-get install apache2 apt-show-versions monit rsyslog ntp cifs-utils mailutils samba fail2ban libsasl2-modules postfix opendkim opendkim-tools oracle-java7-installer p7zip-full handbrake-cli dnsmasq-base imagemagick ffmpeg git libssl-dev build-essential  libpcre3-dev unzip apparmor-utils rng-tools php-pear mariadb-server make dnsutils
 	
 	apt-get install php7.0
 	apt-get install php7.0-mysql php7.0-cli php7.0-fpm php7.0-gd php7.0-curl php7.0-dev php7.0-sqlite3 php-imap
@@ -224,10 +410,7 @@ Install Required Packages
 	# if you want to use php with apache2, also run this:
 	apt-get install libapache2-mod-php7.0
 	
-	# dnstools missing from ubuntu 14.04 lts now
-	
-	# accept defaults for all installers - when postfix installer prompts you, i.e. OK, Internet Site
-	# Don't auto-configure database when the rsyslog utility app asks you.
+	# Don't auto-configure database if the rsyslog utility app asks you.
 
 Configure MariaDB
 	service mysql stop
@@ -244,12 +427,11 @@ Configure MariaDB
 	# disable the /root/.mysql_history file
 	export MYSQL_HISTFILE=/dev/null
 	
+	cd /var/run/mysqld/
+	touch mysqld.pid
+	chown mysql:mysql mysqld.pid
+	
 	you must get the password in /etc/mysql/debian.cnf, and create "debian-sys-maint" user with host: localhost AND 127.0.0.1 with global access to all privileges for service mysql restart to work correctly.
-
-# add hosts to system to force dns resolution to work for more loopback ips:
-	vi /etc/hosts
-		127.0.0.2 nginx
-		127.0.0.3 apache
 
 Configure Apache2 (Note: Jetendo CMS uses Nginx exclusive, Apache configuration is optional)
 	# enable modules
@@ -272,8 +454,8 @@ Install Required Software From Source
 	Nginx
 		mkdir /var/jetendo-server/system/nginx-build
 		cd /var/jetendo-server/system/nginx-build
-		wget http://nginx.org/download/nginx-1.11.3.tar.gz
-		tar xvfz nginx-1.11.3.tar.gz
+		wget http://nginx.org/download/nginx-1.11.5.tar.gz
+		tar xvfz nginx-1.11.5.tar.gz
 		adduser --system --no-create-home --disabled-login --disabled-password --group nginx
 		
 		Put "sendfile off;" in nginx.conf on test server when using virtualbox shared folders
@@ -287,7 +469,7 @@ Install Required Software From Source
 			unzip master.zip -d /var/jetendo-server/system/nginx-build/
 			rm master.zip
 			
-		cd /var/jetendo-server/system/nginx-build/nginx-1.11.3/
+		cd /var/jetendo-server/system/nginx-build/nginx-1.11.5/
 		./configure --with-http_realip_module  --with-http_v2_module --prefix=/var/jetendo-server/nginx --user=nginx --group=nginx --with-http_ssl_module --with-http_gzip_static_module  --with-http_flv_module --with-http_mp4_module --with-http_stub_status_module  --add-module=/var/jetendo-server/system/nginx-build/ngx_devel_kit-master --add-module=/var/jetendo-server/system/nginx-build/set-misc-nginx-module-master
 		make
 		make install
@@ -307,6 +489,13 @@ Install Required Software From Source
 
 		openssl dhparam -out /var/jetendo-server/nginx/ssl/dh2048.pem -outform PEM -2 2048
 		
+		Change system/nginx-conf/jetendo-vhost.conf to have php listen to be like this:
+			listen=127.0.0.1:9000
+		And php pool has to have 
+			listen:127.0.0.1:9000
+		
+		TODO: production php and nginx will need to match development
+		
 	add mime-types to /var/jetendo-server/nginx/conf/mime.types
 		
 		audio/webm weba;
@@ -314,6 +503,23 @@ Install Required Software From Source
 		font/opentype                      otf;
 		application/font-woff2            woff2;
 		
+	/lib/systemd/system/nginx.service
+		[Unit]
+		Description=The NGINX HTTP and reverse proxy server
+		After=syslog.target network.target remote-fs.target nss-lookup.target
+
+		[Service]
+		Type=forking
+		PIDFile=/var/jetendo-server/nginx/logs/nginx.pid
+		ExecStartPre=/var/jetendo-server/nginx/sbin/nginx -t
+		ExecStart=/var/jetendo-server/nginx/sbin/nginx
+		ExecReload=/bin/kill -s HUP $MAINPID
+		ExecStop=/bin/kill -s QUIT $MAINPID
+		PrivateTmp=true
+
+		[Install]
+		WantedBy=multi-user.target
+	update-rc.d nginx enable
 	
 Install lucee
 	Compile and Install Apache APR Library
@@ -330,9 +536,9 @@ Install lucee
 		export JAVA_HOME
 		cd /var/jetendo-server/system/apr-build/
 		# get the newest tomcat native library source here: http://tomcat.apache.org/download-native.cgi
-		wget http://mirrors.advancedhosters.com/apache/tomcat/tomcat-connectors/native/1.1.33/source/tomcat-native-1.1.33-src.tar.gz
-		tar -xvzf tomcat-native-1.1.33-src.tar.gz
-		cd tomcat-native-1.1.33-src/jni/native/
+		wget http://mirror.metrocast.net/apache/tomcat/tomcat-connectors/native/1.2.10/source/tomcat-native-1.2.10-src.tar.gz
+		tar -xvzf tomcat-native-1.2.10-src.tar.gz
+		cd tomcat-native-1.2.10-src/native/
 		./configure --with-apr=/usr/local/apr/bin/ --with-ssl=/usr/include/openssl --with-java-home=/usr/lib/jvm/java-7-oracle && make && make install
 		
 	Install lucee from newest tomcat x64 binary release on www.lucee.org
@@ -341,10 +547,8 @@ Install lucee
 		download lucee linux x64 tomcat from http://lucee.org/ and upload to /var/jetendo-server/system/lucee/
 		
 		chmod 770 the installer file.
-		
-		#shutdown and disable Lucee if it is installed.
-		service lucee_ctl stop
-		echo manual | sudo tee /etc/init/lucee_ctl.override
+		chmod 770 lucee-5.0.0.254-pl0-linux-x64-installer.run
+		./lucee-5.0.0.254-pl0-linux-x64-installer.run
 		
 		run the installer file
 		When it asks for the user to run lucee as, type in: www-data
@@ -355,7 +559,7 @@ Install lucee
 		
 		Edit /etc/init.d/lucee_ctl 
 			Before echo "[DONE]" in the start function add these lines where company domain is one of the main domain setup in jetendo for the server administrator.
-				
+			
 				Test Server:
 					printf "\nLoading Jetendo Application\n"
 					/usr/bin/wget -O- 'http://dev.127.0.0.2.nip.io:8888/zcorerootmapping/index.cfm?_zsa3_path=/&zcoreRunFirstInit=1'
@@ -364,17 +568,21 @@ Install lucee
 					printf "\nLoading Jetendo Application\n"
 					/usr/bin/wget -O- 'http://dev.127.0.0.1.nip.io:8888/zcorerootmapping/index.cfm?_zsa3_path=/&zcoreRunFirstInit=1'
 					printf "\n[DONE]"
-			
+				
 		# prevent lucee from starting on boot (requires that jetendo-start.php init script is installed and configured - documentation is incomplete for this)
 		echo manual | sudo tee /etc/init/lucee_ctl.override
 		
 		This forces the request that loads jetendo to occur on each restart of Lucee.
 		
+		#shutdown and disable Lucee if it is installed.
+		service lucee_ctl stop
+		echo manual | sudo tee /etc/init/lucee_ctl.override
+		
 	/var/jetendo-server/lucee/tomcat/bin/setenv.sh
 	# adjust Xmx high as you can afford, but at least 512m is necessary
 		CATALINA_OPTS="-server -Dsun.io.useCanonCaches=false -Xms512m -Xmx1024m -javaagent:lib/lucee-inst.jar  -Djava.library.path=/usr/local/apr/lib -XX:+OptimizeStringConcat -XX:+UseTLAB -XX:+UseBiasedLocking -Xverify:none -XX:+UseThreadPriorities  -XX:+UseFastAccessorMethods -XX:-UseLargePages -XX:+UseCompressedOops";
 		
-	Put newest JRE In lucee:
+	Note: we're not using java 8 yet in the documentation, so skip this step
 		service lucee_ctl stop
 		rm -rf /var/jetendo-server/lucee/jdk/jre
 		mkdir /var/jetendo-server/lucee/jdk/jre
@@ -409,14 +617,12 @@ Install lucee
 		cp /var/jetendo-server/system/lucee/setenv-production.sh /var/jetendo-server/lucee/tomcat/bin/setenv.sh
 		
 	
-	service lucee_ctl start
 	
 	vi /etc/logrotate.d/tomcat
 	/var/jetendo-server/lucee/tomcat/logs/catalina.out {
 		copytruncate
 		daily
 		rotate 7
-		compress
 		missingok
 		size 5M
 	}
@@ -427,44 +633,14 @@ Install lucee
 		copytruncate
 		daily
 		rotate 7
-		compress
 		missingok
 		size 5M
 	}
 	
+	service lucee_ctl start
 	
-	http://dev.com.127.0.0.2.xip.io:8888/lucee/admin/web.cfm?action=resources.mappings
-	
-	
-	Lucee has been patched in order to fix some things.  Here are the notes to re-create the patch until there is an official fix.
-			learn how to build and deploy a patched version of lucee from source before making any changes:
-				https://bitbucket.org/lucee/lucee/wiki/Build_from_source
-				
-			Edit version to be higher then what you're using:
-			/lucee-java/lucee-core/src/lucee/runtime/Info.ini 
-		
-			farbeyondcode multiple file upload - no micha refused my patch
-				
-		fix for multiple file uploads:
-			C:\ServerData\lucee-build\lucee-java\lucee-core\src\lucee\runtime\type\scope\FormImpl.java
-			line 1: 184: change:
-				fileItems.put(item.getFieldName().toLowerCase(),
-			to:
-				fileItems.put(getFileName(),
-			
-		fix for objectload/objectsave of functions outside a cfc.
-			C:\ServerData\Lucee4\lucee-java\lucee-core\src\lucee\runtime\type\UDFPropertiesImpl.java
-			out.writeObject(cachedWithin); 
-			cachedWithin = in.readObject();
-	
-		make ant in path or use the commands below in command prompt.  http://ant.apache.org/manual/index.html
-			
-			# where Lucee4 is the java github project for current version of Lucee
-			cd C:\ServerData\Lucee4
-			set JAVA_HOME=C:\Program Files\Java\jdk1.7.0_25
-			"C:\ServerData\apache-ant-1.9.6\bin\ant" core
-			
-			then locate patch file in "dist/"
+	http://dev.com.127.0.0.2.nip.io:8888/lucee/admin/web.cfm?action=resources.mappings
+
 	
 Install node.js 0.12.x using nodesource PPA
 	apt-get install apt-transport-https
@@ -516,22 +692,22 @@ Enable the php configuration module:
 	ln -sfn /var/jetendo-server/system/jetendo-mysql-development.cnf /etc/mysql/conf.d/jetendo-mysql-development.cnf 
 	ln -sfn /var/jetendo-server/system/nginx-conf/nginx-development.conf /var/jetendo-server/nginx/conf/nginx.conf
 	ln -sfn /var/jetendo-server/system/jetendo-sysctl-development.conf /etc/sysctl.d/jetendo-sysctl-development.conf
-	ln -sfn /var/jetendo-server/system/monit/jetendo-development.conf /etc/monit/conf.d/jetendo.conf
+	ln -sfn /var/jetendo-server/system/monit/jetendo.conf /etc/monit/conf.d/jetendo.conf
 	ln -sfn /var/jetendo-server/system/apache-conf/development-sites-enabled /etc/apache2/sites-enabled
 	ln -sfn /var/jetendo-server/system/php/development-pool /etc/php/7.0/fpm/pool.d
-		
+	
 	replace sa.your-company.com 3 times in /var/jetendo-server/system/monit/jetendo-development.conf with the jetendo server manager domain and change to https if you are using https 
+	
 	
 # production server symbolic link configuration
 	ln -sfn /var/jetendo-server/system/jetendo-mysql-production.cnf /etc/mysql/conf.d/jetendo-mysql-production.cnf
 	ln -sfn /var/jetendo-server/system/nginx-conf/nginx-production.conf /var/jetendo-server/nginx/conf/nginx.conf
 	ln -sfn /var/jetendo-server/system/jetendo-sysctl-production.conf /etc/sysctl.d/jetendo-sysctl-production.conf
-	ln -sfn /var/jetendo-server/system/monit/jetendo-production.conf /etc/monit/conf.d/jetendo.conf
+	ln -sfn /var/jetendo-server/system/monit/jetendo.conf /etc/monit/conf.d/jetendo.conf
 	ln -sfn /var/jetendo-server/system/apache-conf/production-sites-enabled /etc/apache2/sites-enabled
 	ln -sfn /var/jetendo-server/system/php/production-pool /etc/php/7.0/fpm/pool.d
 	
 	replace sa.your-company.com 3 times in /var/jetendo-server/system/monit/jetendo-production.conf with the jetendo server manager domain and change to https if you are using https 
-	
 	
 ln -sfn /var/jetendo-server/system/jetendo-nginx-init /etc/init.d/nginx
 /usr/sbin/update-rc.d -f nginx defaults
@@ -575,7 +751,7 @@ reboot
 Setup Git options
 	git config --global user.name "Your Name Here"
 	git config --global user.email "your_email@example.com"
-	git config --global core.filemode false
+	git config --global core.filemode true
 
 	
 Configure fail2ban:
@@ -634,7 +810,7 @@ Enable hardware random number generator on non-virtual machine.  This is not saf
 	
 manually download the latest 64-bit stable linux version of wkhtmltopdf on the website: http://wkhtmltopdf.org/downloads.html
 	apt-get install xfonts-base xfonts-75dpi
-	dpkg -i /root/wkhtmltox-0.12.2.1_linux-trusty-amd64.deb
+	apt-get install wkhtmltopdf
 	
 	
 Configure Jungledisk (Optional)
@@ -652,23 +828,6 @@ Configure Jungledisk (Optional)
 		vi /etc/jungledisk/junglediskserver-license.xml
 			<?xml version="1.0" encoding="utf-8"?><configuration><LicenseConfig><licenseKey>LICENSE_KEY</licenseKey><proxyServer><enabled>0</enabled> <proxyServer></proxyServer><userName></userName><password></password></proxyServer></LicenseConfig></configuration>
 
-			
-		need to exclude these from being backed up
-			/var/hotcopy   # this is for r1soft cdp
-			/var/cache
-			/var/jetendo-server/mysql/data/   # make sure /zbackup/mysql is backed up!
-			/usr
-			/sbin
-			/lib
-			/lib64
-			/bin
-			/boot
-			/dev
-			/proc
-			
-		Change cache directory to:
-			/zbackup/jungledisk/cache/
-			
 		service junglediskserver restart
 	Use the management client interface from https://www.jungledisk.com/downloads/business/server/linux/ to further configure what and when to backup.  It is highly recommended you enable the encrypted backup feature for best security.  Be sure not to lose your decryption password.
 
@@ -716,9 +875,9 @@ Configuring Static IPs
 		network 192.168.0.0
 		broadcast 192.168.0.255
 
-Visit http://xip.io/ to understand how this free service helps you create development environments with minimal re-configuration.
+Visit http://nip.io/ to understand how this free service helps you create development environments with minimal re-configuration.
 	Essentially it automates dns configuration, to let you create new domains instantly that point to any ip address you desire.
-	http://mydomain.com.127.0.0.1.xip.io/ would attempt to connection to 127.0.0.1 with the host name mydomain.com.127.0.0.1.xip.io. 
+	http://mydomain.com.127.0.0.1.nip.io/ would attempt to connection to 127.0.0.1 with the host name mydomain.com.127.0.0.1.nip.io. 
 	Jetendo has been designed to support this service by default.
 	
 	You can also use nip.io the same way.
@@ -758,7 +917,7 @@ Configure Jetendo CMS
 	Add the following mappings to the Lucee web admin for the /var/jetendo-server/jetendo/ context:
 		Lucee web admin URL for VirtualBox (create a new password if it asks.)
 		
-		http://dev.com.127.0.0.2.xip.io:8888/lucee/admin/web.cfm?action=resources.mappings
+		http://dev.com.127.0.0.2.nip.io:8888/lucee/admin/web.cfm?action=resources.mappings
 	
 		The resource path for "/zcorecachemapping" must be the sites-writable path for the adminDomain.
 		For example, if request.zos.adminDomain = "http://jetendo.your-company.com";
@@ -780,7 +939,7 @@ Configure Jetendo CMS
 		Resource Path: /var/jetendo-server/jetendo/database-upgrade
 	
 	Setup the Jetendo datasource - the database, datasource, jetendo_datasource, and request.zos.zcoreDatasource must all be the same name.
-		http://dev.com.127.0.0.2.xip.io:8888/lucee/admin/web.cfm?action=services.datasource
+		http://dev.com.127.0.0.2.nip.io:8888/lucee/admin/web.cfm?action=services.datasource
 		Add mysql datasource named "jetendo" or whatever you've configured it to be in the jetendo config files.
 			host: 127.0.0.1
 			Required options: 
@@ -797,15 +956,15 @@ Configure Jetendo CMS
 
 	
 	Enable complete null support and set dot notation to Keep Original Case (fixes javascript case problems):
-		http://dev.com.127.0.0.2.xip.io:8888/lucee/admin/server.cfm?action=server.compiler
+		http://dev.com.127.0.0.2.nip.io:8888/lucee/admin/server.cfm?action=server.compiler
 		
 	Enable mail server:
-		http://dev.com.127.0.0.2.xip.io:8888/lucee/admin/server.cfm?action=services.mail
+		http://dev.com.127.0.0.2.nip.io:8888/lucee/admin/server.cfm?action=services.mail
 		
 		Under Mail Servers -> Server (SMTP), type "localhost" and click update"
 		
 	Configure Lucee security sandbox
-		http://jetendo.your-company.com.127.0.0.2.xip.io:8888/lucee/admin/server.cfm?action=security.access&sec_tab=SPECIAL
+		http://jetendo.your-company.com.127.0.0.2.nip.io:8888/lucee/admin/server.cfm?action=security.access&sec_tab=SPECIAL
 		Under Create new context, select "b180779e6dc8f3bb6a8ea14a604d83d4 (/var/jetendo-server/jetendo/sites)" and click Create
 		Then click edit next to the specific web context
 		On a production server, set General Access for read and write to "closed" when you don't need to access the Lucee admin.   You can re-enable it only when you need to make changes.
@@ -869,7 +1028,7 @@ Install KernelCare.com (paid service for no-reboot kernel updates)
 		# The software will automatically check for new patches every 4 hours. If you would like to run update manually: 
 		/usr/bin/kcarectl --update
 
-Preparing the virtual machine for distribution
+Preparing the virtual machine for distribution:
 	Run these commands inside the virtual machine - it will automatically poweroff when complete.
 		killall -9 php
 		php /var/jetendo-server/system/clean-machine.php

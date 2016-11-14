@@ -9,6 +9,7 @@ if($isHostServer){
 	stopHost($arrVirtualMachine);
 }
 // stop lucee with the memory dump request
+/*
 if(array_key_exists("lucee", $arrServiceMap) && $memoryDumpURL != ""){
 	echo "Dumping lucee application scope:\n";
 	// might want to use curl or wget with timeout instead.
@@ -19,7 +20,8 @@ if(array_key_exists("lucee", $arrServiceMap) && $memoryDumpURL != ""){
 		echo $result;
 	}
 }
-
+*/
+/*
 // stop railo with the memory dump request
 if(array_key_exists("railo", $arrServiceMap) && $memoryDumpURL != ""){
 	echo "Dumping railo application scope:\n";
@@ -31,7 +33,7 @@ if(array_key_exists("railo", $arrServiceMap) && $memoryDumpURL != ""){
 		echo $result;
 	}
 }
-
+*/
 // stop monit
 if(array_key_exists("monit", $arrServiceMap)){
 	echo "Stop monit\n";
@@ -80,13 +82,13 @@ if(array_key_exists("apache", $arrServiceMap)){
 	$r=`/usr/sbin/service apache2 stop`;
 	echo $r."\n";
 }
-
+/*
 if(array_key_exists("railo", $arrServiceMap)){
 	echo "Stop railo\n";
 	$r=`/usr/sbin/service railo_ctl forcequit`;
 	echo $r."\n";
 }
-
+*/
 // stop coldfusion
 if(array_key_exists("coldfusion", $arrServiceMap)){
 	echo "Stop coldfusion\n";

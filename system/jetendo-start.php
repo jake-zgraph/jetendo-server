@@ -272,13 +272,24 @@ if(array_key_exists("php", $arrServiceMap)){
 	$r=`/usr/sbin/service php7.0-fpm start`;
 	echo $r."\n";
 }
+
+if(array_key_exists("postfix", $arrServiceMap)){
+	echo $hostname.' has been started.';
+	$cmd='/bin/echo "'.$hostname.' has been started." | /usr/bin/mailx -s "'.$hostname.' has been started." root@localhost';
+	echo $cmd."\n";
+	$r=`$cmd`;
+	echo $r."\n";
+}else{
+	echo $hostname.' has been started. Can\'t send a notification email because postfix is not enabled.';
+}	
+
+
 // start mysql
 if(array_key_exists("mysql", $arrServiceMap)){
 	echo "Start mysql\n";
 	$r=`/usr/sbin/service mysql start`;
 	echo $r."\n";
 }
-
 
 $jetendoStarted=false;
 
@@ -302,6 +313,13 @@ if(array_key_exists("lucee", $arrServiceMap)){
 		chown('/var/jetendo-server/luceevhosts/tomcat-logs', 'www-data');
 		chgrp('/var/jetendo-server/luceevhosts/tomcat-logs', 'www-data');
 	}
+
+	if(file_exists($currentDir."/lucee_ctl")){
+		$cmd="/bin/cp -f ".$currentDir."/lucee_ctl /etc/init.d/lucee_ctl";
+		chmod('/var/jetendo-server/system/lucee/lucee_ctl', 0755);
+		chown('/var/jetendo-server/luceevhosts/tomcat-logs', 'root');
+		chgrp('/var/jetendo-server/luceevhosts/tomcat-logs', 'root');
+	}
 	echo "Start lucee\n";
 	$r=`/usr/sbin/service lucee_ctl start`;
 	echo $r."\n";
@@ -309,7 +327,8 @@ if(array_key_exists("lucee", $arrServiceMap)){
 	$cmd="/bin/cp -f ".$currentDir."/lucee/logrotate.txt /etc/logrotate.d/tomcat";
 	$r=`$cmd`;
 	echo $r."\n";
-
+	/*
+	// TODO: bring this back when live server also uses it.
 	if(!file_exists("/var/jetendo-server/jetendo/core/config.cfc")){
 		dieWithError("Jetendo CMS is not installed, and can't be started.");
 	}else{
@@ -322,9 +341,27 @@ if(array_key_exists("lucee", $arrServiceMap)){
 			dieWithError("Jetendo CMS status check failed.  You need to manually fix Lucee / Jetendo CMS and then re-run this script.");
 		}
 		$jetendoStarted=true;
-	}
+	}*/
+}
+// start nginx
+if(array_key_exists("nginx", $arrServiceMap)){
+	echo "Start nginx\n";
+	$r=`/usr/sbin/service nginx start`;
+	echo $r."\n";
 }
 
+// start apache
+if(array_key_exists("apache", $arrServiceMap)){
+	echo "Start apache\n";
+	$r=`/usr/sbin/service apache2 start`;
+	echo $r."\n";
+}
+
+// force cron to work earlier
+`/var/jetendo-server/jetendo/scripts/execute-commands.php >/dev/null 2>&1 &`;
+//`/var/jetendo-server/jetendo/scripts/zqueue/queue.php >/dev/null 2>&1 &`;
+//`/var/jetendo-server/jetendo/scripts/zqueue/queue-check-running.php >/dev/null 2>&1 &`;
+/*
 // start railo
 if(array_key_exists("railo", $arrServiceMap)){
 	if(!is_dir('/var/jetendo-server/railovhosts')){
@@ -366,7 +403,7 @@ if(array_key_exists("railo", $arrServiceMap)){
 		}
 		$jetendoStarted=true;
 	}
-}
+}*/
 // check availability of the other servers
 checkAvailableServers();
 
@@ -378,22 +415,7 @@ checkAvailableServers();
 
 // update nginx configuration to match server availability
 
-		
-
-// start nginx
-if(array_key_exists("nginx", $arrServiceMap)){
-	echo "Start nginx\n";
-	$r=`/usr/sbin/service nginx start`;
-	echo $r."\n";
-}
-
-// start apache
-if(array_key_exists("apache", $arrServiceMap)){
-	echo "Start apache\n";
-	$r=`/usr/sbin/service apache2 start`;
-	echo $r."\n";
-}
-
+	
 
 // start coldfusion
 if(array_key_exists("coldfusion", $arrServiceMap)){
@@ -429,15 +451,6 @@ if($isHostServer){
 	startHost($serverPath, $arrVirtualMachine);
 }
 
-if(array_key_exists("postfix", $arrServiceMap)){
-	echo $hostname.' has been started.';
-	$cmd='/bin/echo "'.$hostname.' has been started." | /usr/bin/mailx -s "'.$hostname.' has been started." root@localhost';
-	echo $cmd."\n";
-	$r=`$cmd`;
-	echo $r."\n";
-}else{
-	echo $hostname.' has been started. Can\'t send a notification email because postfix is not enabled.';
-}
 // done!
 echo "\n===========\n";
 ?>
